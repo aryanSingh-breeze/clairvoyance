@@ -1,19 +1,19 @@
 import asyncio
-import sys
 import argparse
 from dotenv import load_dotenv
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agents.voice.automatic.services.mock_stt import DEFAULT_TEST_QUESTIONS, TestQuestionProcessor
-from app.core.logger import logger, configure_session_logger
+from opentelemetry import trace
+from langfuse import get_client
+
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.audio.filters.noisereduce_filter import NoisereduceFilter
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from app.agents.voice.automatic.services.llm_wrapper import LLMServiceWrapper
 from pipecat.services.azure.llm import AzureLLMService
 from pipecat.services.google.rtvi import GoogleRTVIObserver
 from pipecat.transcriptions.language import Language
@@ -31,18 +31,17 @@ from app.agents.voice.automatic.analytics.tracing_setup import setup_tracing
 from .processors import LLMSpyProcessor
 from .prompts import get_system_prompt
 from .tools import initialize_tools, shopify_buddy_test, breeze_buddy
+from .services.mock_stt import TestQuestionProcessor, DEFAULT_TEST_QUESTIONS
 from .tts import get_tts_service
 from .stt import get_stt_service
 from app.agents.voice.automatic.processors.llm_spy import handle_confirmation_response
-from app.agents.voice.automatic.types import (
+from .types import (
     TTSProvider,
     Mode,
     decode_tts_provider,
     decode_voice_name,
     decode_mode,
 )
-from opentelemetry import trace
-from langfuse import get_client
 from .types import (
     TTSProvider,
     Mode,
@@ -52,9 +51,6 @@ from .types import (
 )
 
 load_dotenv(override=True)
-
-# import setup_tracing from tracing_setup.py file
-from app.agents.voice.automatic.analytics.tracing_setup import setup_tracing
 
 async def main():
     parser = argparse.ArgumentParser()
@@ -128,7 +124,10 @@ async def main():
         daily_params,
     )
 
-    stt = get_stt_service(voice_name=voice_name.value)
+    stt = GoogleSTTService(
+        params=GoogleSTTService.InputParams(languages=[Language.EN_US, Language.EN_IN], enable_interim_results=False),
+        credentials=config.GOOGLE_CREDENTIALS_JSON
+    )
 
     llm = LLMServiceWrapper(AzureLLMService(
         api_key=config.AZURE_OPENAI_API_KEY,
@@ -240,7 +239,6 @@ async def main():
     pipeline_components = [
         transport.input(),
         stt,
-        rtvi
     ]
     
     if config.ENVIRONMENT.lower() in ["development", "dev"]:
@@ -252,6 +250,7 @@ async def main():
         context_aggregator.user(),
         llm,
         tool_call_processor,
+        rtvi,
         tts,
         transport.output(),
         context_aggregator.assistant(),
